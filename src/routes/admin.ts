@@ -20,6 +20,8 @@ import {
   updateApiKeyStatus,
 } from "../repo/apiKeys";
 import { displayKey } from "../utils/crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createAdminSession, deleteAdminSession } from "../repo/adminSessions";
 import {
   addTokens,
@@ -37,7 +39,6 @@ import {
 import { generateImagineWs, resolveAspectRatio } from "../grok/imagineExperimental";
 import { checkRateLimits } from "../grok/rateLimits";
 import { addRequestLog, clearRequestLogs, getRequestLogs, getRequestStats } from "../repo/logs";
-import { getRefreshProgress, setRefreshProgress } from "../repo/refreshProgress";
 import {
   deleteCacheRows,
   getCacheSizeBytes,
@@ -280,7 +281,10 @@ adminRoutes.get("/api/v1/admin/config", requireAdminAuth, async (c) => {
         fail_threshold: Number(settings.token.fail_threshold ?? 5),
         save_delay_ms: Number(settings.token.save_delay_ms ?? 500),
         reload_interval_sec: Number(settings.token.reload_interval_sec ?? 30),
+        nsfw_refresh_concurrency: Number(settings.token.nsfw_refresh_concurrency ?? 10),
+        nsfw_refresh_retries: Number(settings.token.nsfw_refresh_retries ?? 3),
       },
+
       cache: {
         enable_auto_clean: Boolean(settings.cache.enable_auto_clean),
         limit_mb: Number(settings.cache.limit_mb ?? 1024),
@@ -292,6 +296,21 @@ adminRoutes.get("/api/v1/admin/config", requireAdminAuth, async (c) => {
         usage_max_concurrent: Number(settings.performance.usage_max_concurrent ?? 25),
         assets_delete_batch_size: Number(settings.performance.assets_delete_batch_size ?? 10),
         admin_assets_batch_size: Number(settings.performance.admin_assets_batch_size ?? 10),
+      },
+      register: {
+        worker_domain: String(settings.register.worker_domain ?? ""),
+        email_domain: String(settings.register.email_domain ?? ""),
+        admin_password: String(settings.register.admin_password ?? ""),
+        yescaptcha_key: String(settings.register.yescaptcha_key ?? ""),
+        solver_url: String(settings.register.solver_url ?? ""),
+        solver_browser_type: String(settings.register.solver_browser_type ?? ""),
+        solver_threads: Number(settings.register.solver_threads ?? 5),
+        register_threads: Number(settings.register.register_threads ?? 10),
+        default_count: Number(settings.register.default_count ?? 100),
+        auto_start_solver: Boolean(settings.register.auto_start_solver),
+        solver_debug: Boolean(settings.register.solver_debug),
+        max_errors: Number(settings.register.max_errors ?? 0),
+        max_runtime_minutes: Number(settings.register.max_runtime_minutes ?? 0),
       },
     });
   } catch (e) {
@@ -307,12 +326,16 @@ adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
     const tokenCfg = (body && typeof body === "object" ? body.token : null) as any;
     const cacheCfg = (body && typeof body === "object" ? body.cache : null) as any;
     const performanceCfg = (body && typeof body === "object" ? body.performance : null) as any;
+    const registerCfg = (body && typeof body === "object" ? body.register : null) as any;
 
     const global_config: any = {};
     const grok_config: any = {};
     const token_config: any = {};
     const cache_config: any = {};
     const performance_config: any = {};
+    const register_config: any = {};
+
+    const register_config: any = {};
 
     if (appCfg && typeof appCfg === "object") {
       if (typeof appCfg.api_key === "string") grok_config.api_key = appCfg.api_key.trim();
@@ -356,7 +379,12 @@ adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
         token_config.save_delay_ms = Math.max(0, Math.floor(Number(tokenCfg.save_delay_ms)));
       if (Number.isFinite(Number(tokenCfg.reload_interval_sec)))
         token_config.reload_interval_sec = Math.max(0, Math.floor(Number(tokenCfg.reload_interval_sec)));
+      if (Number.isFinite(Number(tokenCfg.nsfw_refresh_concurrency)))
+        token_config.nsfw_refresh_concurrency = Math.max(1, Math.floor(Number(tokenCfg.nsfw_refresh_concurrency)));
+      if (Number.isFinite(Number(tokenCfg.nsfw_refresh_retries)))
+        token_config.nsfw_refresh_retries = Math.max(0, Math.floor(Number(tokenCfg.nsfw_refresh_retries)));
     }
+
 
     if (cacheCfg && typeof cacheCfg === "object") {
       if (typeof cacheCfg.enable_auto_clean === "boolean") cache_config.enable_auto_clean = cacheCfg.enable_auto_clean;
@@ -377,7 +405,23 @@ adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
       }
     }
 
-    await saveSettings(c.env, { global_config, grok_config, token_config, cache_config, performance_config });
+    if (registerCfg && typeof registerCfg === "object") {
+      if (typeof registerCfg.worker_domain === "string") register_config.worker_domain = registerCfg.worker_domain.trim();
+      if (typeof registerCfg.email_domain === "string") register_config.email_domain = registerCfg.email_domain.trim();
+      if (typeof registerCfg.admin_password === "string") register_config.admin_password = registerCfg.admin_password.trim();
+      if (typeof registerCfg.yescaptcha_key === "string") register_config.yescaptcha_key = registerCfg.yescaptcha_key.trim();
+      if (typeof registerCfg.solver_url === "string") register_config.solver_url = registerCfg.solver_url.trim();
+      if (typeof registerCfg.solver_browser_type === "string") register_config.solver_browser_type = registerCfg.solver_browser_type.trim();
+      if (Number.isFinite(Number(registerCfg.solver_threads))) register_config.solver_threads = Math.max(1, Math.floor(Number(registerCfg.solver_threads)));
+      if (Number.isFinite(Number(registerCfg.register_threads))) register_config.register_threads = Math.max(1, Math.floor(Number(registerCfg.register_threads)));
+      if (Number.isFinite(Number(registerCfg.default_count))) register_config.default_count = Math.max(1, Math.floor(Number(registerCfg.default_count)));
+      if (typeof registerCfg.auto_start_solver === "boolean") register_config.auto_start_solver = registerCfg.auto_start_solver;
+      if (typeof registerCfg.solver_debug === "boolean") register_config.solver_debug = registerCfg.solver_debug;
+      if (Number.isFinite(Number(registerCfg.max_errors))) register_config.max_errors = Math.max(0, Math.floor(Number(registerCfg.max_errors)));
+      if (Number.isFinite(Number(registerCfg.max_runtime_minutes))) register_config.max_runtime_minutes = Math.max(0, Math.floor(Number(registerCfg.max_runtime_minutes)));
+    }
+
+    await saveSettings(c.env, { global_config, grok_config, token_config, cache_config, performance_config, register_config });
     return c.json(legacyOk({ message: "配置已更新" }));
   } catch (e) {
     return c.json(legacyErr(`Update config failed: ${e instanceof Error ? e.message : String(e)}`), 500);
@@ -950,6 +994,29 @@ adminRoutes.post("/api/settings", requireAdminAuth, async (c) => {
   } catch (e) {
     return c.json(jsonError(`更新失败: ${e instanceof Error ? e.message : String(e)}`, "UPDATE_SETTINGS_ERROR"), 500);
   }
+});
+
+adminRoutes.get("/api/v1/admin/legacy/migration/status", requireAdminAuth, async (c) => {
+  const dataRoot = join(process.cwd(), "data");
+  const doneMarker = join(dataRoot, ".locks", "legacy_accounts_tos_birth_nsfw_v2.done");
+  const lockFile = join(dataRoot, ".locks", "legacy_accounts_tos_birth_nsfw_v2.lock");
+
+  if (existsSync(doneMarker)) {
+    let ts = 0;
+    try {
+      const raw = readFileSync(doneMarker, "utf-8").trim();
+      ts = raw ? Number(raw) : 0;
+    } catch {
+      ts = 0;
+    }
+    return c.json({ success: true, data: { status: "done", done_at: ts } });
+  }
+
+  if (existsSync(lockFile)) {
+    return c.json({ success: true, data: { status: "running", done_at: null } });
+  }
+
+  return c.json({ success: true, data: { status: "pending", done_at: null } });
 });
 
 adminRoutes.get("/api/storage/mode", requireAdminAuth, async (c) => {

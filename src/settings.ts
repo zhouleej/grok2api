@@ -38,6 +38,8 @@ export interface TokenSettings {
   fail_threshold?: number;
   save_delay_ms?: number;
   reload_interval_sec?: number;
+  nsfw_refresh_concurrency?: number;
+  nsfw_refresh_retries?: number;
 }
 
 export interface CacheSettings {
@@ -114,6 +116,8 @@ const DEFAULTS: SettingsBundle = {
     fail_threshold: 5,
     save_delay_ms: 500,
     reload_interval_sec: 30,
+    nsfw_refresh_concurrency: 10,
+    nsfw_refresh_retries: 3,
   },
   cache: {
     enable_auto_clean: true,
