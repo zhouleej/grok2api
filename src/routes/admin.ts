@@ -20,8 +20,7 @@ import {
   updateApiKeyStatus,
 } from "../repo/apiKeys";
 import { displayKey } from "../utils/crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { getRefreshProgress, setRefreshProgress } from "../repo/refreshProgress";
 import { createAdminSession, deleteAdminSession } from "../repo/adminSessions";
 import {
   addTokens,
@@ -333,8 +332,6 @@ adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
     const token_config: any = {};
     const cache_config: any = {};
     const performance_config: any = {};
-    const register_config: any = {};
-
     const register_config: any = {};
 
     if (appCfg && typeof appCfg === "object") {
@@ -997,26 +994,7 @@ adminRoutes.post("/api/settings", requireAdminAuth, async (c) => {
 });
 
 adminRoutes.get("/api/v1/admin/legacy/migration/status", requireAdminAuth, async (c) => {
-  const dataRoot = join(process.cwd(), "data");
-  const doneMarker = join(dataRoot, ".locks", "legacy_accounts_tos_birth_nsfw_v2.done");
-  const lockFile = join(dataRoot, ".locks", "legacy_accounts_tos_birth_nsfw_v2.lock");
-
-  if (existsSync(doneMarker)) {
-    let ts = 0;
-    try {
-      const raw = readFileSync(doneMarker, "utf-8").trim();
-      ts = raw ? Number(raw) : 0;
-    } catch {
-      ts = 0;
-    }
-    return c.json({ success: true, data: { status: "done", done_at: ts } });
-  }
-
-  if (existsSync(lockFile)) {
-    return c.json({ success: true, data: { status: "running", done_at: null } });
-  }
-
-  return c.json({ success: true, data: { status: "pending", done_at: null } });
+  return c.json({ success: true, data: { status: "unknown", done_at: null } });
 });
 
 adminRoutes.get("/api/storage/mode", requireAdminAuth, async (c) => {
