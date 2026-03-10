@@ -24,7 +24,7 @@ import { localDayString, tryConsumeDailyUsage, tryConsumeDailyUsageMulti } from 
 import { nextLocalMidnightExpirationSeconds } from "../kv/cleanup";
 import { nowMs } from "../utils/time";
 import { arrayBufferToBase64 } from "../utils/base64";
-import { upsertCacheRow } from "../repo/cache";
+import { deleteCacheRows, getCacheSizeBytes, listOldestRows, upsertCacheRow } from "../repo/cache";
 
 function openAiError(message: string, code: string): Record<string, unknown> {
   return { error: { message, type: "invalid_request_error", code } };
@@ -98,6 +98,28 @@ function parseIntSafe(v: string | undefined, fallback: number): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   return Math.floor(n);
+}
+
+async function enforceCacheLimit(env: Env, settings: Awaited<ReturnType<typeof getSettings>>): Promise<void> {
+  if (!settings.cache.enable_auto_clean) return;
+  const limitMb = Number(settings.cache.limit_mb ?? 1024);
+  if (!Number.isFinite(limitMb) || limitMb <= 0) return;
+
+  const stats = await getCacheSizeBytes(env.DB);
+  const totalMb = stats.total / (1024 * 1024);
+  if (totalMb <= limitMb) return;
+
+  const targetMb = limitMb * 0.8;
+  let deletedMb = 0;
+  while (totalMb - deletedMb > targetMb) {
+    const rows = await listOldestRows(env.DB, null, null, 200);
+    if (!rows.length) break;
+    const keys = rows.map((r) => r.key);
+    await Promise.all(keys.map((k) => env.KV_CACHE.delete(k)));
+    await deleteCacheRows(env.DB, keys);
+    deletedMb += rows.reduce((sum, row) => sum + row.size, 0) / (1024 * 1024);
+    if (rows.length < 200) break;
+  }
 }
 
 function quotaError(bucket: string): Record<string, unknown> {
@@ -1995,6 +2017,7 @@ openAiRoutes.post("/uploads/image", async (c) => {
       last_access_at: now,
       expires_at: expiresAt * 1000,
     });
+    await enforceCacheLimit(c.env, settings);
 
     return c.json({
       url: `/images/${encodeURIComponent(name)}`,

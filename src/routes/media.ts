@@ -3,7 +3,15 @@ import type { Env } from "../env";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/tokens";
 import { getDynamicHeaders } from "../grok/headers";
-import { deleteCacheRow, touchCacheRow, upsertCacheRow, type CacheType } from "../repo/cache";
+import {
+  deleteCacheRow,
+  deleteCacheRows,
+  getCacheSizeBytes,
+  listOldestRows,
+  touchCacheRow,
+  upsertCacheRow,
+  type CacheType,
+} from "../repo/cache";
 import { nowMs } from "../utils/time";
 import { nextLocalMidnightExpirationSeconds } from "../kv/cleanup";
 
@@ -30,6 +38,28 @@ function parseIntSafe(v: string | undefined, fallback: number): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   return Math.floor(n);
+}
+
+async function enforceCacheLimit(env: Env, settings: Awaited<ReturnType<typeof getSettings>>): Promise<void> {
+  if (!settings.cache.enable_auto_clean) return;
+  const limitMb = Number(settings.cache.limit_mb ?? 1024);
+  if (!Number.isFinite(limitMb) || limitMb <= 0) return;
+
+  const stats = await getCacheSizeBytes(env.DB);
+  const totalMb = stats.total / (1024 * 1024);
+  if (totalMb <= limitMb) return;
+
+  const targetMb = limitMb * 0.8;
+  let deleted = 0;
+  while (totalMb - deleted > targetMb) {
+    const rows = await listOldestRows(env.DB, null, null, 200);
+    if (!rows.length) break;
+    const keys = rows.map((r) => r.key);
+    await Promise.all(keys.map((k) => env.KV_CACHE.delete(k)));
+    await deleteCacheRows(env.DB, keys);
+    deleted += rows.reduce((sum, row) => sum + row.size, 0) / (1024 * 1024);
+    if (rows.length < 200) break;
+  }
 }
 
 function base64UrlDecode(input: string): string {
@@ -265,6 +295,7 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
             last_access_at: now,
             expires_at: expiresAt * 1000,
           });
+          await enforceCacheLimit(c.env, settingsBundle);
         } catch {
           // ignore write errors
         }
