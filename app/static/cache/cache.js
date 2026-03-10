@@ -131,6 +131,10 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+function escapeAttr(str) {
+  return escapeHtml(str).replace(/`/g, '&#96;');
+}
+
 function ensureUI() {
   if (!ui.batchActions) cacheUI();
 }
@@ -806,7 +810,11 @@ function renderLocalCacheList(type, items) {
   const selected = selectedLocal[type];
   body.innerHTML = items.map(item => {
     const timeText = formatTime(item.mtime_ms);
-    const preview = item.preview_url ? `<img src="${item.preview_url}" alt="" class="cache-preview">` : '';
+    const preview = item.preview_url
+      ? (type === 'video'
+        ? `<img src="${item.preview_url}" alt="" class="cache-preview" onclick="viewLocalFile('video', '${item.name}')">`
+        : `<img src="${item.preview_url}" alt="" class="cache-preview">`)
+      : '';
     const checked = selected.has(item.name) ? 'checked' : '';
     const rowClass = selected.has(item.name) ? 'row-selected' : '';
     return `
@@ -850,24 +858,37 @@ async function viewLocalFile(type, name) {
   const url = type === 'image' ? `/v1/files/image/${safeName}` : `/v1/files/video/${safeName}`;
   const auth = buildAuthHeaders(apiKey);
   try {
-    const res = await fetch(url, { headers: auth });
-    if (!res.ok) {
-      showToast(`预览失败: HTTP ${res.status}`, 'error');
+  const res = await fetch(url, { headers: auth });
+  if (!res.ok) {
+    showToast(`预览失败: HTTP ${res.status}`, 'error');
+    return;
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  if (type === 'video') {
+    const win = window.open('', '_blank');
+    if (!win) {
+      URL.revokeObjectURL(objectUrl);
+      showToast('预览被浏览器拦截，请允许弹窗', 'warning');
       return;
     }
-    const blob = await res.blob();
-    const objectUrl = URL.createObjectURL(blob);
+    const safeName = escapeHtml(name || '');
+    const safeSrc = escapeAttr(objectUrl);
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>${safeName}</title></head><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;"><video src="${safeSrc}" controls autoplay style="max-width:100%;max-height:100vh;"></video></body></html>`);
+    win.document.close();
+  } else {
     const win = window.open(objectUrl, '_blank');
     if (!win) {
       URL.revokeObjectURL(objectUrl);
       showToast('预览被浏览器拦截，请允许弹窗', 'warning');
       return;
     }
-    const revoke = () => {
-      try { URL.revokeObjectURL(objectUrl); } catch (e) {}
-    };
-    win.addEventListener('beforeunload', revoke, { once: true });
-    setTimeout(revoke, 60_000);
+  }
+  const revoke = () => {
+    try { URL.revokeObjectURL(objectUrl); } catch (e) {}
+  };
+  setTimeout(revoke, 60_000);
+
   } catch (e) {
     showToast(`预览失败: ${e?.message || e}`, 'error');
   }

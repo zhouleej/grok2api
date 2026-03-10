@@ -46,6 +46,16 @@
   margin-top: 6px;
 }
 
+.legacy-status-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: #111;
+  color: #fff;
+}
+
 .config-secret-row {
   display: flex;
   align-items: center;

@@ -1,5 +1,6 @@
-﻿let apiKey = '';
+let apiKey = '';
 let currentConfig = {};
+let legacyStatus = null;
 const NUMERIC_FIELDS = new Set([
   'timeout',
   'max_retry',
@@ -115,12 +116,67 @@ async function loadData() {
     if (res.ok) {
       currentConfig = await res.json();
       renderConfig(currentConfig);
+      await loadLegacyStatus();
     } else if (res.status === 401) {
       logout();
     }
   } catch (e) {
     showToast('连接失败', 'error');
   }
+}
+
+async function loadLegacyStatus() {
+  try {
+    const res = await fetch('/api/v1/admin/legacy/migration/status', {
+      headers: buildAuthHeaders(apiKey)
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    legacyStatus = data?.data || null;
+    renderLegacyStatus();
+  } catch (e) {
+    legacyStatus = null;
+  }
+}
+
+function renderLegacyStatus() {
+  const container = document.getElementById('config-container');
+  if (!container) return;
+  const existing = document.getElementById('legacy-migration-status');
+  if (existing) existing.remove();
+
+  if (!legacyStatus) return;
+
+  const status = String(legacyStatus.status || '').trim();
+  const doneAt = Number(legacyStatus.done_at || 0);
+  let statusText = '未执行';
+  let desc = '升级时将自动执行：同意用户协议、设置年龄、开启 NSFW。';
+
+  if (status === 'running') {
+    statusText = '执行中';
+    desc = '后台正在对现有账号执行一次性修复。';
+  } else if (status === 'done') {
+    statusText = '已完成';
+    if (doneAt > 0) {
+      const dt = new Date(doneAt * 1000);
+      desc = `已在 ${dt.toLocaleString()} 执行完毕。`;
+    }
+  }
+
+  const card = document.createElement('div');
+  card.id = 'legacy-migration-status';
+  card.className = 'config-section';
+  card.innerHTML = `
+    <div class="config-section-title">旧账号一次性修复</div>
+    <div class="config-field">
+      <div class="config-field-title">执行状态</div>
+      <p class="config-field-desc">${desc}</p>
+      <div class="config-field-input">
+        <span class="legacy-status-chip">${statusText}</span>
+      </div>
+    </div>
+  `;
+  container.prepend(card);
 }
 
 function renderConfig(data) {
@@ -139,7 +195,14 @@ function renderConfig(data) {
     return 0;
   });
 
-  sections.forEach(section => {
+  sectionOrder.forEach(section => {
+    if (!data[section]) data[section] = {};
+  });
+
+  const mergedSections = Array.from(new Set([...sections, ...sectionOrder]));
+
+  mergedSections.forEach(section => {
+
     const items = data[section];
 
     const card = document.createElement('div');
