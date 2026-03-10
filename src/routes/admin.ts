@@ -419,7 +419,8 @@ adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
     }
 
     await saveSettings(c.env, { global_config, grok_config, token_config, cache_config, performance_config, register_config });
-    return c.json(legacyOk({ message: "配置已更新" }));
+    const updated = await getSettings(c.env);
+    return c.json(legacyOk({ message: "配置已更新", data: updated }));
   } catch (e) {
     return c.json(legacyErr(`Update config failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }

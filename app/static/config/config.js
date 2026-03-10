@@ -423,6 +423,11 @@ async function saveConfig() {
     });
 
     if (res.ok) {
+      const payload = await res.json().catch(() => null);
+      if (payload && payload.data) {
+        currentConfig = payload.data;
+        renderConfig(currentConfig);
+      }
       btn.innerText = '成功';
       showToast('配置已保存', 'success');
       setTimeout(() => {
