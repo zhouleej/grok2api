@@ -845,10 +845,32 @@ function renderLocalCacheList(type, items) {
   updateSelectedCount();
 }
 
-function viewLocalFile(type, name) {
+async function viewLocalFile(type, name) {
   const safeName = encodeURIComponent(name);
   const url = type === 'image' ? `/v1/files/image/${safeName}` : `/v1/files/video/${safeName}`;
-  window.open(url, '_blank');
+  const auth = buildAuthHeaders(apiKey);
+  try {
+    const res = await fetch(url, { headers: auth });
+    if (!res.ok) {
+      showToast(`预览失败: HTTP ${res.status}`, 'error');
+      return;
+    }
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const win = window.open(objectUrl, '_blank');
+    if (!win) {
+      URL.revokeObjectURL(objectUrl);
+      showToast('预览被浏览器拦截，请允许弹窗', 'warning');
+      return;
+    }
+    const revoke = () => {
+      try { URL.revokeObjectURL(objectUrl); } catch (e) {}
+    };
+    win.addEventListener('beforeunload', revoke, { once: true });
+    setTimeout(revoke, 60_000);
+  } catch (e) {
+    showToast(`预览失败: ${e?.message || e}`, 'error');
+  }
 }
 
 async function deleteLocalFile(type, name) {
