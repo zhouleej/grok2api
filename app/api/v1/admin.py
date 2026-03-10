@@ -366,6 +366,32 @@ async def update_config_api(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/api/v1/admin/legacy/migration/status", dependencies=[Depends(verify_api_key)])
+async def legacy_migration_status_api():
+    """Legacy account migration status (TOS + BirthDate + NSFW)."""
+    data_root = Path(__file__).parent.parent.parent.parent / "data"
+    lock_dir = data_root / ".locks"
+    done_marker = lock_dir / "legacy_accounts_tos_birth_nsfw_v2.done"
+    lock_file = lock_dir / "legacy_accounts_tos_birth_nsfw_v2.lock"
+
+    if done_marker.exists():
+        try:
+            ts = int(done_marker.read_text(encoding="utf-8").strip() or 0)
+        except Exception:
+            ts = 0
+        if ts <= 0:
+            try:
+                ts = int(done_marker.stat().st_mtime)
+            except Exception:
+                ts = 0
+        return {"supported": True, "status": "done", "done_at": ts}
+
+    if lock_file.exists():
+        return {"supported": True, "status": "running"}
+
+    return {"supported": True, "status": "pending"}
+
+
 def _display_key(key: str) -> str:
     k = str(key or "")
     if len(k) <= 12:
