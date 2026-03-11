@@ -2017,6 +2017,7 @@ openAiRoutes.post("/uploads/image", async (c) => {
       last_access_at: now,
       expires_at: expiresAt * 1000,
     });
+    const settings = await getSettings(c.env);
     await enforceCacheLimit(c.env, settings);
 
     return c.json({
