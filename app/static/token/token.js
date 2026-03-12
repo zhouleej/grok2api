@@ -1,4 +1,4 @@
-﻿let apiKey = '';
+let apiKey = '';
 let allTokens = {};
 let flatTokens = [];
 let isBatchProcessing = false;
@@ -218,14 +218,13 @@ async function detectWorkersRuntime() {
 }
 
 async function applyRuntimeUiFlags() {
-  // Default hide first; show back for local/docker after detection.
   setAutoRegisterUiEnabled(false);
   setNsfwRefreshUiEnabled(false);
   isWorkersRuntime = await detectWorkersRuntime();
   if (!isWorkersRuntime) {
     setAutoRegisterUiEnabled(true);
-    setNsfwRefreshUiEnabled(true);
   }
+  setNsfwRefreshUiEnabled(true);
 }
 
 if (document.readyState === 'loading') {

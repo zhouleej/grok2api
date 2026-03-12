@@ -48,6 +48,7 @@ import {
 import { dbAll, dbFirst, dbRun } from "../db";
 import { nowMs } from "../utils/time";
 import { listUsageForDay, localDayString } from "../repo/apiKeyUsage";
+import { enableNsfw } from "../grok/nsfw";
 
 function jsonError(message: string, code: string): Record<string, unknown> {
   return { error: message, code };
@@ -447,8 +448,8 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  const settings = await getSettings(c.env);
-  const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
+  let settings = await getSettings(c.env);
+  let cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
 
   let socketClosed = false;
   let runToken = 0;
@@ -494,6 +495,8 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
 
     void (async () => {
       while (!socketClosed && localToken === runToken) {
+        settings = await getSettings(c.env);
+        cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
         let chosen: { token: string; token_type: "sso" | "ssoSuper" } | null = null;
         try {
           chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0");
@@ -800,6 +803,118 @@ adminRoutes.post("/api/v1/admin/tokens/refresh", requireAdminAuth, async (c) => 
     return c.json(legacyOk({ results }));
   } catch (e) {
     return c.json(legacyErr(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/api/v1/admin/tokens/nsfw/refresh", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json()) as Record<string, unknown>;
+    const payload = body && typeof body === "object" ? body : {};
+    const settings = await getSettings(c.env);
+    const cfRaw = normalizeCfCookie(settings.grok.cf_clearance ?? "");
+    const cfClearance = cfRaw ? cfRaw.replace(/^cf_clearance=/, "").trim() || undefined : undefined;
+
+    const seen = new Set<string>();
+    const tokens: string[] = [];
+
+    if (payload.all) {
+      const rows = await listTokens(c.env.DB);
+      for (const row of rows) {
+        const t = normalizeSsoToken(String(row.token ?? "").trim());
+        if (t && !seen.has(t)) {
+          seen.add(t);
+          tokens.push(t);
+        }
+      }
+    } else {
+      const candidates: string[] = [];
+      if (typeof payload.token === "string") candidates.push(payload.token);
+      if (Array.isArray(payload.tokens))
+        candidates.push(...payload.tokens.filter((x: unknown) => typeof x === "string"));
+      for (const raw of candidates) {
+        const t = normalizeSsoToken(String(raw).trim());
+        if (t && !seen.has(t)) {
+          seen.add(t);
+          tokens.push(t);
+        }
+      }
+    }
+
+    if (!tokens.length) return c.json(legacyErr("No tokens provided"), 400);
+
+    const concurrency = Math.max(1, Number(payload.concurrency) || settings.token.nsfw_refresh_concurrency || 10);
+    const maxRetries = Math.max(0, Number(payload.retries) || settings.token.nsfw_refresh_retries || 3);
+    const maxAttempts = maxRetries + 1;
+
+    type TokenResult = {
+      token: string;
+      ok: boolean;
+      attempts: number;
+      step?: string;
+      error?: string;
+      invalidated?: boolean;
+    };
+
+    async function processOne(token: string): Promise<TokenResult> {
+      let lastError = "unknown error";
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const r = await enableNsfw(token, settings.grok, cfClearance);
+          if (r.ok) {
+            return { token, ok: true, attempts: attempt };
+          }
+          lastError = r.error ?? `HTTP ${r.statusCode}`;
+        } catch (e) {
+          lastError = e instanceof Error ? e.message : String(e);
+        }
+      }
+
+      let invalidated = false;
+      try {
+        await dbRun(c.env.DB, "UPDATE tokens SET status = 'expired' WHERE token = ?", [token]);
+        invalidated = true;
+      } catch {
+        /* best-effort */
+      }
+
+      return { token, ok: false, attempts: maxAttempts, step: "nsfw", error: lastError, invalidated };
+    }
+
+    const results: TokenResult[] = [];
+    let running = 0;
+    let idx = 0;
+
+    await new Promise<void>((resolve) => {
+      function next() {
+        while (running < concurrency && idx < tokens.length) {
+          const token = tokens[idx++]!;
+          running++;
+          processOne(token).then((result) => {
+            results.push(result);
+            running--;
+            if (idx >= tokens.length && running === 0) {
+              resolve();
+            } else {
+              next();
+            }
+          });
+        }
+        if (tokens.length === 0) resolve();
+      }
+      next();
+    });
+
+    const success = results.filter((r) => r.ok).length;
+    const failedItems = results.filter((r) => !r.ok);
+    const invalidated = failedItems.filter((r) => r.invalidated).length;
+
+    return c.json({
+      status: "success",
+      summary: { total: tokens.length, success, failed: failedItems.length, invalidated },
+      failed: failedItems,
+    });
+  } catch (e) {
+    return c.json(legacyErr(`NSFW refresh failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
 });
 
@@ -1163,15 +1278,14 @@ adminRoutes.post("/api/tokens/refresh-all", requireAdminAuth, async (c) => {
       failed: 0,
     });
 
-    const settings = await getSettings(c.env);
-    const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
-
     c.executionCtx.waitUntil(
       (async () => {
         let success = 0;
         let failed = 0;
         for (let i = 0; i < tokens.length; i++) {
           const t = tokens[i]!;
+          const settings = await getSettings(c.env);
+          const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
           const cookie = cf ? `sso-rw=${t.token};sso=${t.token};${cf}` : `sso-rw=${t.token};sso=${t.token}`;
           const r = await checkRateLimits(cookie, settings.grok, "grok-4");
           if (r) {
